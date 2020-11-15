@@ -12,6 +12,7 @@ google-cloud = "*"
 PyHamcrest = "*"
 
 [dev-packages]
+apache-beam = {extras = ["gcp"], version = "*"}
 
 [requires]
 python_version = "3.6"
