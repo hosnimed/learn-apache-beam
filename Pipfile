@@ -1,0 +1,17 @@
+[[source]]
+url = "https://pypi.org/simple"
+verify_ssl = true
+name = "pypi"
+
+[packages]
+grpcio-tools = "==1.30.0"
+future = "==0.18.2"
+mypy-protobuf = "==1.18"
+nose = "*"
+google-cloud = "*"
+PyHamcrest = "*"
+
+[dev-packages]
+
+[requires]
+python_version = "3.6"
