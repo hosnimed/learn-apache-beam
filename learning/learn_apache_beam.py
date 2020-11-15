@@ -3,13 +3,20 @@ from apache_beam.options.pipeline_options import PipelineOptions
 
 import logging
 import argparse
+import re
+import os
+import shutil
 
 from apache_beam.runners import DirectRunner
 
     
+class ExtractWordsFn(beam.DoFn):
+    def process(self, element):
+        return re.findall(r'[\w]+', element)
+
+
 class ComputeWordLengthFn(beam.DoFn):
     def process(self, element):
-        # print([len(element)])
         return [len(element)]
 
 class MyOptions(PipelineOptions):
@@ -40,30 +47,47 @@ def run(argv=None, saveMainSession=False):
     known_args, pipeline_args = parser.parse_known_args(argv)
     pipeline_options = PipelineOptions(pipeline_args)
     
-    with beam.Pipeline(runner=DirectRunner(), options=pipeline_options) as p:
-        """         
-        logging.debug("All options:\n%s", p.options.get_all_options())
-        logging.debug("Known Cmd Args : \n"
-                        "\t -input-raw-str: %s",
-                        known_args.input_raw_str)
-        logging.debug("MyPipelineOptions : \n"
-                        "\t -input-file: %s"
-                        "\t -output-file: %s",
-                        my_pipeline_options.get_all_options()["input_file"],
-                        my_pipeline_options.get_all_options()["output_file"]
-                        )
+    try:
+        shutil.rmtree(os.getcwd()+"/target", ignore_errors=True)
+    except OSError as error:
+        logging.error(error)
+    else:
+        with beam.Pipeline(runner=DirectRunner(), options=pipeline_options) as p:
+            """         
+            logging.debug("All options:\n%s", p.options.get_all_options())
+            logging.debug("Known Cmd Args : \n"
+                            "\t -input-raw-str: %s",
+                            known_args.input_raw_str)
+            logging.debug("MyPipelineOptions : \n"
+                            "\t -input-file: %s"
+                            "\t -output-file: %s",
+                            my_pipeline_options.get_all_options()["input_file"],
+                            my_pipeline_options.get_all_options()["output_file"]
+                            )
+            
+            """        
+            lines = p | "ReadInputFile" >> beam.io.ReadFromText(my_pipeline_options.input_file)
+            
+            """     
+            #ParDoFn: with DoFn
+            lines_len_v1 = lines | "Mapping with ParDo Fn" >> beam.ParDo(ComputeWordLengthFn()) | "Write lines_len_v1" >> beam.io.WriteToText(os.getcwd()+"/target/lines_len_v1.out.txt")
+            lines_len_v2 = lines | "Mapping with FlatMap Fn" >> beam.FlatMap(lambda word: [len(word)]) | "Write lines_len_v2" >> beam.io.WriteToText(os.getcwd()+"/target/lines_len_v2.out.txt")
+            lines_len_v3 = lines | "Mapping with Map Fn" >> beam.Map(len) | "Write lines_len_v3" >> beam.io.WriteToText(os.getcwd()+"/target/lines_len_v3.out.txt")
         
-        """        
-        lines = p | "ReadInputFile" >> beam.io.ReadFromText(my_pipeline_options.input_file)
-        
-        #ParDoFn: with DoFn
-        lines_len_v1 = lines | "Mapping with ParDo Fn" >> beam.ParDo(ComputeWordLengthFn())
-        print(f"lines_len_v1 : {lines_len_v1}")
-        lines_len_v2 = lines | "Mapping with FlatMap Fn" >> beam.FlatMap(lambda word: [len(word)])
-        print(f"lines_len_v2 : {lines_len_v2}")
-        lines_len_v3 = lines | "Mapping with Map Fn" >> beam.Map(len)
-        print(f"lines_len_v3 : {lines_len_v3}")
+            #Filter
+            non_empty_lines = lines | "Filter empty lines" >> beam.Filter(lambda x: len(x) > 0) | "Write non empty lines" >> beam.io.WriteToText(os.getcwd()+"/target/non_empty_lines.out.txt") 
+            """
 
+            #GroupByKey
+            words_count = (lines
+            | "Extract" >> beam.ParDo(ExtractWordsFn())
+            | "Lower" >> beam.ParDo(lambda w: w.lower())
+            | "PairWithOne" >> beam.Map(lambda w: (w, 1))
+            | "GrouByKey" >> beam.GroupByKey()
+            | "Count" >> beam.CombineValues(sum)
+            | "WriteToFile" >> beam.io.WriteToText(os.getcwd()+"/target/word_count.out.txt")
+            )
+    
 
 if __name__ == '__main__':
     logging.getLogger().setLevel(logging.INFO)
