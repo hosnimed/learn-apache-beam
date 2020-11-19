@@ -10,12 +10,19 @@ import shutil
 from apache_beam.runners import DirectRunner
 
 class CombineAllMarks(beam.CombineFn):
+
+    def __init__(self, is_per_key=False):
+        self.is_per_key = is_per_key
+
     def create_accumulator(self):
         return (0.0, 0)
 
     def add_input(self, acc, elem):
         (sum, count) = acc
-        return sum + elem[2], count + 1
+        if self.is_per_key:
+            return sum + elem[1], count + 1
+        else:
+            return sum + elem[2], count + 1
 
     def merge_accumulators(self, accumulators):
         sums, counts = zip(*accumulators)
@@ -152,9 +159,18 @@ def run(argv=None, saveMainSession=False):
                 print("="*100)
 
             students_results = p | "CreateStudentResult" >> beam.Create(student_subjects_marks)
+           
             (students_results 
             | beam.CombineGlobally(CombineAllMarks()).with_defaults() # return empty PCollection if input is empty
             | "Show Result" >> beam.Map(print_row,"GlobalAverage") )
+
+            #CombinePerKey
+            (students_results
+            | "Group per name" >> beam.Map(lambda tuple: (tuple[0], (tuple[1], tuple[2])))
+            | "Compute avg per student" >> beam.CombinePerKey(CombineAllMarks(is_per_key=True)) 
+            | "Show Result Per Key" >> beam.Map(print_row,"AveragePerStudent")
+            # | "Write avg marks to file" >> beam.io.WriteToText(os.getcwd()+"/target/avg_mark_per_student.txt")
+            )
 
 
 if __name__ == '__main__':
