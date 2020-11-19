@@ -9,7 +9,22 @@ import shutil
 
 from apache_beam.runners import DirectRunner
 
-    
+class CombineAllMarks(beam.CombineFn):
+    def create_accumulator(self):
+        return (0.0, 0)
+
+    def add_input(self, acc, elem):
+        (sum, count) = acc
+        return sum + elem[2], count + 1
+
+    def merge_accumulators(self, accumulators):
+        sums, counts = zip(*accumulators)
+        return sum(sums), sum(counts)
+
+    def extract_output(self, sum_count):
+        (sum, count) = sum_count
+        return sum / count if count > 0 else 0.0
+
 class ExtractWordsFn(beam.DoFn):
     def process(self, element):
         return re.findall(r'[\w]+', element)
@@ -79,7 +94,7 @@ def run(argv=None, saveMainSession=False):
             """
 
             #GroupByKey
-            words_count = (lines
+            (lines
             | "Extract" >> beam.ParDo(ExtractWordsFn())
             | "Lower" >> beam.ParDo(lambda w: w.lower())
             | "PairWithOne" >> beam.Map(lambda w: (w, 1))
@@ -88,7 +103,7 @@ def run(argv=None, saveMainSession=False):
             | "WriteToFile" >> beam.io.WriteToText(os.getcwd()+"/target/word_count.out.txt")
             )
 
-            #CoGroupKey
+            #CoGroupByKey
             emails_list = [
             ('amy', 'amy@example.com'),
             ('carl', 'carl@example.com'),
@@ -105,17 +120,42 @@ def run(argv=None, saveMainSession=False):
             emails = p | 'CreateEmails' >> beam.Create(emails_list)
             phones = p | 'CreatePhones' >> beam.Create(phones_list)
     
-            joined_result = ( {"emails":emails_list, "phones":phones_list} | beam.CoGroupByKey())
+            joined_result = ( {"emails":emails, "phones":phones} | beam.CoGroupByKey())
 
             def join_person_info(person_infos):
                 name, info = person_infos
                 emails, phones = info["emails"], info["phones"]
                 return f"{name} : {emails} - {phones}"
 
-            persons_infos = (joined_result 
+            (joined_result 
             | "Show person info" >> beam.Map(join_person_info)
             | "Write infos to file" >> beam.io.WriteToText(os.getcwd()+"/target/person_info.txt")
             )  
+
+            #CombineGlobally
+            student_subjects_marks = [
+            ("Joseph", "Maths", 83), ("Joseph", "Physics", 74), ("Joseph", "Chemistry", 91), 
+            ("Joseph", "Biology", 82), ("Jimmy", "Maths", 69), ("Jimmy", "Physics", 62), 
+            ("Jimmy", "Chemistry", 97), ("Jimmy", "Biology", 80), ("Tina", "Maths", 78), 
+            ("Tina", "Physics", 73), ("Tina", "Chemistry", 68), ("Tina", "Biology", 87), 
+            ("Thomas", "Maths", 87), ("Thomas", "Physics", 93), ("Thomas", "Chemistry", 91), 
+            ("Thomas", "Biology", 74), ("Cory", "Maths", 56), ("Cory", "Physics", 65), 
+            ("Cory", "Chemistry", 71), ("Cory", "Biology", 68), ("Jackeline", "Maths", 86), 
+            ("Jackeline", "Physics", 62), ("Jackeline", "Chemistry", 75), ("Jackeline", "Biology", 83), 
+            ("Juan", "Maths", 63), ("Juan", "Physics", 69), ("Juan", "Chemistry", 64),("Juan", "Biology", 60)] 
+    
+            def print_row(row, *args):
+                print("="*100)
+                for v in args:
+                    print(v)
+                print(row)
+                print("="*100)
+
+            students_results = p | "CreateStudentResult" >> beam.Create(student_subjects_marks)
+            (students_results 
+            | beam.CombineGlobally(CombineAllMarks()).with_defaults() # return empty PCollection if input is empty
+            | "Show Result" >> beam.Map(print_row,"GlobalAverage") )
+
 
 if __name__ == '__main__':
     logging.getLogger().setLevel(logging.INFO)
