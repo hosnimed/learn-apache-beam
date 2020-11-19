@@ -87,7 +87,35 @@ def run(argv=None, saveMainSession=False):
             | "Count" >> beam.CombineValues(sum)
             | "WriteToFile" >> beam.io.WriteToText(os.getcwd()+"/target/word_count.out.txt")
             )
+
+            #CoGroupKey
+            emails_list = [
+            ('amy', 'amy@example.com'),
+            ('carl', 'carl@example.com'),
+            ('julia', 'julia@example.com'),
+            ('carl', 'carl@email.com'),
+            ]
+            phones_list = [
+                ('amy', '111-222-3333'),
+                ('james', '222-333-4444'),
+                ('amy', '333-444-5555'),
+                ('carl', '444-555-6666'),
+            ]
+
+            emails = p | 'CreateEmails' >> beam.Create(emails_list)
+            phones = p | 'CreatePhones' >> beam.Create(phones_list)
     
+            joined_result = ( {"emails":emails_list, "phones":phones_list} | beam.CoGroupByKey())
+
+            def join_person_info(person_infos):
+                name, info = person_infos
+                emails, phones = info["emails"], info["phones"]
+                return f"{name} : {emails} - {phones}"
+
+            persons_infos = (joined_result 
+            | "Show person info" >> beam.Map(join_person_info)
+            | "Write infos to file" >> beam.io.WriteToText(os.getcwd()+"/target/person_info.txt")
+            )  
 
 if __name__ == '__main__':
     logging.getLogger().setLevel(logging.INFO)
