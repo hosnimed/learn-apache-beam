@@ -179,8 +179,17 @@ def run(argv=None, saveMainSession=False):
             | beam.Flatten()
             | "Write Flattened to File" >> beam.io.WriteToText(os.getcwd()+"/target/joseph_and_juan.txt")
             )
+            
+            #Partition
+            def partition_fn(student, num_partitions):
+                (_, subject, _) = student
+                subjects  = 'Maths','Physics','Chemistry','Biology', 
+                return subjects.index(subject)
 
-             
+            all_partitions = student_subjects_marks | beam.Partition(partition_fn, 4)
+            (all_partitions['0'] 
+            # | "Show Maths students" >> beam.Map(print_row, "Math Student") )
+            | "Write Maths students to File" >> beam.io.WriteToText(os.getcwd()+"/target/maths_students.txt") )
 
 
 if __name__ == '__main__':
