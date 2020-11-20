@@ -172,6 +172,16 @@ def run(argv=None, saveMainSession=False):
             # | "Write avg marks to file" >> beam.io.WriteToText(os.getcwd()+"/target/avg_mark_per_student.txt")
             )
 
+            #Flatten
+            joseph_subjects_marks = p | "Create Joseph PCol" >> beam.Create(student_subjects_marks[:3])
+            juan_subjects_marks   = p | "Create Juan PCol" >> beam.Create(student_subjects_marks[-4:])
+            ((joseph_subjects_marks, juan_subjects_marks)
+            | beam.Flatten()
+            | "Write Flattened to File" >> beam.io.WriteToText(os.getcwd()+"/target/joseph_and_juan.txt")
+            )
+
+             
+
 
 if __name__ == '__main__':
     logging.getLogger().setLevel(logging.INFO)
