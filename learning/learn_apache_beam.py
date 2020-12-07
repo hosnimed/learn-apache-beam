@@ -1,5 +1,5 @@
-import apache_beam as beam
 from apache_beam.options.pipeline_options import PipelineOptions
+import apache_beam as beam
 
 import logging
 import argparse
@@ -8,6 +8,20 @@ import os
 import shutil
 
 from apache_beam.runners import DirectRunner
+
+class ProcessWordsMultiOutputs(beam.DoFn):
+    def process(self, element, upper_bound, prefix):
+        if element.lower().startswith(prefix.lower()):
+            yield element 
+        if len(element) <= upper_bound:
+            yield beam.pvalue.TaggedOutput('Short_Words', element)
+        else:
+            yield beam.pvalue.TaggedOutput('Long_Words', element)
+
+class FilterWordsUsingLength(beam.DoFn):
+    def process(self,element,lower_bound,upper_bound):
+        if lower_bound <= len(element) <= upper_bound:
+            yield element
 
 class CombineAllMarks(beam.CombineFn):
 
@@ -190,6 +204,26 @@ def run(argv=None, saveMainSession=False):
             (all_partitions['0'] 
             # | "Show Maths students" >> beam.Map(print_row, "Math Student") )
             | "Write Maths students to File" >> beam.io.WriteToText(os.getcwd()+"/target/maths_students.txt") )
+            
+            #SideInput
+            (
+                lines | "SideInput : Extract words" >> beam.ParDo(ExtractWordsFn())
+                | "Filter using length" >> beam.ParDo(FilterWordsUsingLength(),lower_bound=2,upper_bound=5)
+                | "Write small words" >> beam.io.WriteToText(os.getcwd()+"/target/small_words.txt")
+            )
+
+           #SideOutput
+            outputs = (
+                lines | "SideOutput : Extract words" >> beam.ParDo(ExtractWordsFn())
+                | "SideOutput :  Filter using length" >> beam.ParDo(ProcessWordsMultiOutputs(),upper_bound=5, prefix='O')
+                .with_outputs('Short_Words', 'Long_Words', main='Start_With')
+            )
+            short_words = outputs.Short_Words
+            long_words  = outputs.Long_Words
+            start_with_n= outputs.Start_With
+            short_words | "SideOutput: Write short words" >> beam.io.WriteToText(os.getcwd()+"/target/side_output/short_words.txt")
+            long_words | "SideOutput : Write long words" >> beam.io.WriteToText(os.getcwd()+"/target/side_output/long_words.txt")
+            start_with_n | "SideOutput : Write words : start with n" >> beam.io.WriteToText(os.getcwd()+"/target/side_output/start_with.txt")
 
 
 if __name__ == '__main__':
