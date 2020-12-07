@@ -213,18 +213,18 @@ def run(argv=None, saveMainSession=False):
             )
 
            #SideOutput
+            prefix = 'O'
             outputs = (
                 lines | "SideOutput : Extract words" >> beam.ParDo(ExtractWordsFn())
-                | "SideOutput :  Filter using length" >> beam.ParDo(ProcessWordsMultiOutputs(),upper_bound=5, prefix='O')
+                | "SideOutput :  Filter using length" >> beam.ParDo(ProcessWordsMultiOutputs(),upper_bound=5, prefix=prefix)
                 .with_outputs('Short_Words', 'Long_Words', main='Start_With')
             )
             short_words = outputs.Short_Words
             long_words  = outputs.Long_Words
-            start_with_n= outputs.Start_With
+            start_with  = outputs.Start_With
             short_words | "SideOutput: Write short words" >> beam.io.WriteToText(os.getcwd()+"/target/side_output/short_words.txt")
-            long_words | "SideOutput : Write long words" >> beam.io.WriteToText(os.getcwd()+"/target/side_output/long_words.txt")
-            start_with_n | "SideOutput : Write words : start with n" >> beam.io.WriteToText(os.getcwd()+"/target/side_output/start_with.txt")
-
+            long_words  | "SideOutput : Write long words" >> beam.io.WriteToText(os.getcwd()+"/target/side_output/long_words.txt")
+            start_with  | "SideOutput : Write words : start with" >> beam.io.WriteToText(os.getcwd()+f"/target/side_output/start_with_{prefix}.txt")
 
 if __name__ == '__main__':
     logging.getLogger().setLevel(logging.INFO)
