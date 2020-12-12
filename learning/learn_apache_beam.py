@@ -9,6 +9,12 @@ import shutil
 
 from apache_beam.runners import DirectRunner
 
+class ComputeWordsTransform(beam.PTransform):
+    def expand(self, pcol):
+       return (pcol 
+       | "PTransform : Extract Words" >> beam.ParDo(ExtractWordsFn()) 
+       | "PTransform : Count Words" >> beam.combiners.Count.PerElement()
+       )
 class ProcessWordsMultiOutputs(beam.DoFn):
     def process(self, element, upper_bound, prefix):
         if element.lower().startswith(prefix.lower()):
@@ -225,6 +231,12 @@ def run(argv=None, saveMainSession=False):
             short_words | "SideOutput: Write short words" >> beam.io.WriteToText(os.getcwd()+"/target/side_output/short_words.txt")
             long_words  | "SideOutput : Write long words" >> beam.io.WriteToText(os.getcwd()+"/target/side_output/long_words.txt")
             start_with  | "SideOutput : Write words : start with" >> beam.io.WriteToText(os.getcwd()+f"/target/side_output/start_with_{prefix}.txt")
+            
+            #PTransform
+            ( lines.apply(ComputeWordsTransform()) # <=> lines | ComputeWordsTransform() 
+            | "PTransform : Write words" >> beam.io.WriteToText(os.getcwd()+"/target/ptransform_words.txt") 
+            )
+
 
 if __name__ == '__main__':
     logging.getLogger().setLevel(logging.INFO)
