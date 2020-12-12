@@ -112,12 +112,12 @@ def run(argv=None, saveMainSession=False):
             
             """     
             #ParDoFn: with DoFn
-            lines_len_v1 = lines | "Mapping with ParDo Fn" >> beam.ParDo(ComputeWordLengthFn()) | "Write lines_len_v1" >> beam.io.WriteToText(os.getcwd()+"/target/lines_len_v1.out.txt")
-            lines_len_v2 = lines | "Mapping with FlatMap Fn" >> beam.FlatMap(lambda word: [len(word)]) | "Write lines_len_v2" >> beam.io.WriteToText(os.getcwd()+"/target/lines_len_v2.out.txt")
-            lines_len_v3 = lines | "Mapping with Map Fn" >> beam.Map(len) | "Write lines_len_v3" >> beam.io.WriteToText(os.getcwd()+"/target/lines_len_v3.out.txt")
+            lines_len_v1 = lines | "Mapping with ParDo Fn" >> beam.ParDo(ComputeWordLengthFn()) | "Write lines_len_v1" >> beam.io.WriteToText(os.getcwd()+"/target/lines_len_v1.out", file_name_suffix=".txt")
+            lines_len_v2 = lines | "Mapping with FlatMap Fn" >> beam.FlatMap(lambda word: [len(word)]) | "Write lines_len_v2" >> beam.io.WriteToText(os.getcwd()+"/target/lines_len_v2.out", file_name_suffix=".txt")
+            lines_len_v3 = lines | "Mapping with Map Fn" >> beam.Map(len) | "Write lines_len_v3" >> beam.io.WriteToText(os.getcwd()+"/target/lines_len_v3.out", file_name_suffix=".txt")
         
             #Filter
-            non_empty_lines = lines | "Filter empty lines" >> beam.Filter(lambda x: len(x) > 0) | "Write non empty lines" >> beam.io.WriteToText(os.getcwd()+"/target/non_empty_lines.out.txt") 
+            non_empty_lines = lines | "Filter empty lines" >> beam.Filter(lambda x: len(x) > 0) | "Write non empty lines" >> beam.io.WriteToText(os.getcwd()+"/target/non_empty_lines.out", file_name_suffix=".txt") 
             """
 
             #GroupByKey
@@ -127,7 +127,7 @@ def run(argv=None, saveMainSession=False):
             | "PairWithOne" >> beam.Map(lambda w: (w, 1))
             | "GrouByKey" >> beam.GroupByKey()
             | "Count" >> beam.CombineValues(sum)
-            | "WriteToFile" >> beam.io.WriteToText(os.getcwd()+"/target/word_count.out.txt")
+            | "WriteToFile" >> beam.io.WriteToText(os.getcwd()+"/target/word_count.out", file_name_suffix=".txt")
             )
 
             #CoGroupByKey
@@ -156,7 +156,7 @@ def run(argv=None, saveMainSession=False):
 
             (joined_result 
             | "Show person info" >> beam.Map(join_person_info)
-            | "Write infos to file" >> beam.io.WriteToText(os.getcwd()+"/target/person_info.txt")
+            | "Write infos to file" >> beam.io.WriteToText(os.getcwd()+"/target/person_info", file_name_suffix=".txt")
             )  
 
             #CombineGlobally
@@ -189,7 +189,7 @@ def run(argv=None, saveMainSession=False):
             | "Group per name" >> beam.Map(lambda tuple: (tuple[0], (tuple[1], tuple[2])))
             | "Compute avg per student" >> beam.CombinePerKey(CombineAllMarks(is_per_key=True)) 
             | "Show Result Per Key" >> beam.Map(print_row,"AveragePerStudent")
-            # | "Write avg marks to file" >> beam.io.WriteToText(os.getcwd()+"/target/avg_mark_per_student.txt")
+            # | "Write avg marks to file" >> beam.io.WriteToText(os.getcwd()+"/target/avg_mark_per_student", file_name_suffix=".txt")
             )
 
             #Flatten
@@ -197,7 +197,7 @@ def run(argv=None, saveMainSession=False):
             juan_subjects_marks   = p | "Create Juan PCol" >> beam.Create(student_subjects_marks[-4:])
             ((joseph_subjects_marks, juan_subjects_marks)
             | beam.Flatten()
-            | "Write Flattened to File" >> beam.io.WriteToText(os.getcwd()+"/target/joseph_and_juan.txt")
+            | "Write Flattened to File" >> beam.io.WriteToText(os.getcwd()+"/target/joseph_and_juan", file_name_suffix=".txt")
             )
             
             #Partition
@@ -209,13 +209,13 @@ def run(argv=None, saveMainSession=False):
             all_partitions = student_subjects_marks | beam.Partition(partition_fn, 4)
             (all_partitions['0'] 
             # | "Show Maths students" >> beam.Map(print_row, "Math Student") )
-            | "Write Maths students to File" >> beam.io.WriteToText(os.getcwd()+"/target/maths_students.txt") )
+            | "Write Maths students to File" >> beam.io.WriteToText(os.getcwd()+"/target/maths_students", file_name_suffix=".txt") )
             
             #SideInput
             (
                 lines | "SideInput : Extract words" >> beam.ParDo(ExtractWordsFn())
                 | "Filter using length" >> beam.ParDo(FilterWordsUsingLength(),lower_bound=2,upper_bound=5)
-                | "Write small words" >> beam.io.WriteToText(os.getcwd()+"/target/small_words.txt")
+                | "Write small words" >> beam.io.WriteToText(os.getcwd()+"/target/small_words", file_name_suffix=".txt")
             )
 
            #SideOutput
@@ -228,13 +228,13 @@ def run(argv=None, saveMainSession=False):
             short_words = outputs.Short_Words
             long_words  = outputs.Long_Words
             start_with  = outputs.Start_With
-            short_words | "SideOutput: Write short words" >> beam.io.WriteToText(os.getcwd()+"/target/side_output/short_words.txt")
-            long_words  | "SideOutput : Write long words" >> beam.io.WriteToText(os.getcwd()+"/target/side_output/long_words.txt")
-            start_with  | "SideOutput : Write words : start with" >> beam.io.WriteToText(os.getcwd()+f"/target/side_output/start_with_{prefix}.txt")
+            short_words | "SideOutput: Write short words" >> beam.io.WriteToText(os.getcwd()+"/target/side_output/short_words", file_name_suffix=".txt")
+            long_words  | "SideOutput : Write long words" >> beam.io.WriteToText(os.getcwd()+"/target/side_output/long_words", file_name_suffix=".txt")
+            start_with  | "SideOutput : Write words : start with" >> beam.io.WriteToText(os.getcwd()+f"/target/side_output/start_with_{prefix}", file_name_suffix=".txt")
             
             #PTransform
             ( lines.apply(ComputeWordsTransform()) # <=> lines | ComputeWordsTransform() 
-            | "PTransform : Write words" >> beam.io.WriteToText(os.getcwd()+"/target/ptransform_words.txt") 
+            | "PTransform : Write words" >> beam.io.WriteToText(os.getcwd()+"/target/ptransform_words", file_name_suffix=".txt") 
             )
 
 
