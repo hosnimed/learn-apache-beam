@@ -10,9 +10,12 @@ mypy-protobuf = "==1.18"
 nose = "*"
 google-cloud = "*"
 PyHamcrest = "*"
+google-resumable-media = "*"
 
 [dev-packages]
 apache-beam = {extras = ["gcp"], version = "*"}
+google-cloud-storage = "*"
+google-cloud-bigquery = "2.6.1"
 
 [requires]
-python_version = "3.6"
+python_version = "3.8"
