@@ -1,11 +1,13 @@
+import sys
 import uuid
 import logging
 import time
 
 from datetime import datetime
+from urllib3.util import Retry
 
 from google.cloud.exceptions import Conflict
-from urllib3.util import Retry
+from google.api_core.exceptions import NotFound
 
 from google.cloud import storage
 from google.cloud.storage import Bucket
@@ -73,7 +75,7 @@ def run():
             (1000, 2020, 12, 25, float(18.30), float(5.50), True, False)
         ]
         table_rows_ids = range(len(table_rows))
-        table = insert_rows_from_object(client, my_dataset, table_name, table_rows, table_schema, max_retries=MAX_RETRIES)
+        table_from_object = insert_rows_from_object(client, my_dataset, table_name, table_rows, table_schema)
 
         # Insert row in table from Local File
         table_file = "samples/gsod_mini_10.json"
@@ -88,8 +90,17 @@ def run():
         table_load_job_id = f"big_query_sample_{exec_date_str}_{uuid.uuid4()}"
         table_uri = "gs://beam_sample_weather_dataset/gsod_mini_10"
         print("\t Load table from : URI \t")
-        insert_rows_from_uri(client, job_location, my_dataset, table_name, table_schema, table_uri, table_load_job_id,
-                             timeout=TIMEOUT)
+        table_from_uri = insert_rows_from_uri(client, job_location, my_dataset, table_name, table_schema, table_uri, table_load_job_id,timeout=TIMEOUT)
+
+        # Copy Table(s)
+        print("=" * 30, "Copy Tables", "=" * 30)
+        src_table1 = create_table(client, "src_table_1",table_schema, dataset=my_dataset)
+        copy_table(client, table_from_object, src_table1)
+        src_table2 = create_table(client, "src_table_2",table_schema, dataset=my_dataset)
+        copy_table(client, table_from_object, src_table2)
+        dst_table = create_table(client, "dst_table", table_schema, dataset=my_dataset)
+        copy_table(client, [src_table1, src_table2], dst_table, delete_source=False)
+        show_table_data(client,dst_table)
 
         print("=" * 30, "Record & REPEATED Schema", "=" * 30)
         table_schema.append(
@@ -106,9 +117,11 @@ def run():
         table_name = "gsod_with_addresses"
         address_record = {"ips": ["10.1.2.3.4", "10.5.6.7.8"], "city": "NY", "postal_code": 12345}
         table_with_repeated_field_rows = [(1000, 2020, 12, 25, float(18.30), float(5.50), True, False, address_record)]
-        insert_rows_from_object(client, my_dataset, table_name, table_with_repeated_field_rows, table_schema,max_retries=MAX_RETRIES)
-    except:
-        pass
+        # insert_rows_from_object(client, my_dataset, table_name, table_with_repeated_field_rows, table_schema, max_retries=MAX_RETRIES)
+
+    except Exception as error:
+        logging.error(error)
+        raise error
     finally:
         # Cleaning
         print("=" * 30, "Cleaning ...", "=" * 30)
@@ -117,6 +130,66 @@ def run():
         bucket = storage_client.get_bucket(bucket_name)
         bucket.delete(storage_client)
         print("Bucket {} deleted!".format(bucket.name))
+
+
+def create_table(client, table_name, schema, project=None, dataset=None):
+    """
+    Create Table with Schema
+    :param client: BQ Client
+    :param table_name: Table name
+    :param schema: Table Schema
+    :param project: default to client.project
+    :param dataset: default to client.dataset
+    :return: created table
+    """
+    try:
+        if project is None:
+            project = client.project
+        if dataset is None:
+            dataset = client.dataset
+        logging.info("Project: {}\tDataset: {}\tTable: {}".format(project, dataset.dataset_id, table_name))
+        table_id = "{}.{}.{}".format(project, dataset.dataset_id, table_name)
+        table = bigquery.Table(table_id, schema=schema)
+        client.create_table(table)
+        table = client.get_table(table)
+        logging.info("Table {} created successfully.".format(table_id))
+        return table
+    except Exception as error:
+        raise error
+
+
+def copy_table(client, source_tables, destination_table, delete_source=False, not_found_ok=True):
+    """
+    Copy single or multiple source table(s) to a destination table
+    :param client: BQ Client
+    :param source_tables: Single/List source tables
+    :param destination_table: Destination table
+    :param delete_source: Boolean, delete source table(s)
+    :param not_found_ok: Boolean, raise exception if source table(s) not found
+    :return: Creation/Deletion status
+    """
+    logging.info("Copying Table:\n From: {}\n To: {}".format(source_tables, destination_table))
+    try:
+        copy_job = client.copy_table(source_tables, destination_table)
+        copy_result = copy_job.result()
+        if copy_result:
+            logging.info("Copy operation done with success")
+            if delete_source:
+                client.delete_table(source_tables)
+    except NotFound as error:
+        if not_found_ok:
+            logging.info("Sources Table(s) deleted successfully.")
+            return True
+        else:
+            logging.error("Delete operation failed: source table(s) not found.")
+            logging.error(error)
+            return False
+    except Exception as error:
+        logging.error("Can't copy table(s).")
+        logging.error(error)
+        return False
+    else:
+        return True
 
 
 def insert_rows_from_uri(client, job_location, dataset, table_name, table_schema, table_uri, load_job_id, timeout=10):
@@ -132,7 +205,6 @@ def insert_rows_from_uri(client, job_location, dataset, table_name, table_schema
     :param timeout : optional timeout, default to 10
     :return: The created Table
     """
-    # print("insert_rows_from_uri params:\nClient:{}\nJobLocation:{}\nDataset:{}\nTableName:{}\nTableSchema:{}\nTableURI:{}\nLoadJobId:{}\nTimeout:{}".format(client, job_location, dataset, table_name, table_schema, table_uri, load_job_id, timeout))
     table_ref = dataset.table(table_name)
     table = Table(table_ref, table_schema)
     table_load_job_conf = bigquery.LoadJobConfig(
@@ -184,8 +256,10 @@ def create_bucket(storage_client, project, blob_name, bucket_name, table_file, e
             blob.upload_from_filename(table_file)
             return True
     except Conflict:
-        if exists_ok: return True
-        else: return False
+        if exists_ok:
+            return True
+        else:
+            return False
     except Exception as error:
         logging.error(error)
         raise
@@ -203,16 +277,15 @@ def insert_rows_from_object(client, dataset, table_name, table_rows, table_schem
     :param max_retries: Max retries, default to 3
     :return: The created Table
     """
-    table_ref = dataset.table(table_name)
-    table = Table(table_ref, table_schema)
-    full_table_id = table.full_table_id if table.full_table_id is not None else "{}.{}.{}".format(client.project, dataset.dataset_id, table_name)
-    print("FULL_TABLE_ID :: {}".format(full_table_id))
     try:
-        client.create_table(table, exists_ok=True)
+        print("Insert {} rows to Table: {}.{}".format(len(table_rows), dataset.dataset_id, table_name))
+        table = create_table(client, table_name, table_schema, dataset=dataset)
+        full_table_id = table.full_table_id \
+            if table.full_table_id is not None \
+            else "{}.{}.{}".format(client.project, dataset, table_name)
+        full_table_id = str.replace(full_table_id, ":", ".")
+        logging.info("FULL_TABLE_ID :: {}".format(full_table_id))
         table_rows_ids = range(len(table_rows)) if table_rows_ids is None else table_rows_ids
-        print('Table :  {}'.format(table))
-        created_table_id = client.create_table(table, exists_ok=True)
-        print("Created Table {}".format(created_table_id.table_id))
         num_rows = 0
         retries = 0
         while num_rows == 0 and retries < max_retries:
@@ -223,13 +296,11 @@ def insert_rows_from_object(client, dataset, table_name, table_rows, table_schem
             num_rows = results.total_rows
             retries += 1
             time.sleep(3)
-        print_rows(results)
+        return table
     except Exception as error:
         logging.error("Can not load table data.")
         logging.error(error)
         raise
-    else:
-        return table
 
 
 def update_dataset_description(client, dataset_id, description=None):
@@ -329,5 +400,15 @@ def print_rows(results):
         print(row)
 
 
+def show_table_data(client,table,max_result=10):
+    # Print row data in tabular format.
+    rows = client.list_rows(table, max_results=max_result)
+    format_string = "{!s:<16} " * len(rows.schema)
+    field_names = [field.name for field in rows.schema]
+    print(format_string.format(*field_names))  # Prints column headers.
+    for row in rows:
+        print(format_string.format(*row))  # Prints row data.
+
 if __name__ == "__main__":
+    logging.basicConfig(format='%(levelname)s:%(message)s', level=logging.INFO)
     run()
