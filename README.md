@@ -5,7 +5,7 @@ Learn apache beam with pyhton from official documentation
 
 - Use [pipenev](https://github.com/pypa/pipenv)
 - Python >= 3.6
-- Preferably acquiring a gcp account, or you can use [gcloud build local](https://github.com/GoogleCloudPlatform/cloud-build-local)
+- Preferably using a real GCP services (you can get a free trial account), or check those [emulators](https://github.com/AYLIEN/emulator-tools)
 
 ### How to build
 ````sh

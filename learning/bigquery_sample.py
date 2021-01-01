@@ -1,3 +1,4 @@
+import os
 import sys
 import uuid
 import logging
@@ -20,16 +21,41 @@ def run():
     TIMEOUT = 10
     RETRY = Retry(backoff_factor=3)
     MAX_RETRIES = 10
+    LOCATION = "US"
     try:
-        # Construct a BigQuery client object.
-        client = bigquery.Client()  # return QueryJob
-        project = client.project
-        exec_date = datetime.utcnow()
-        exec_date_fmt = "%Y_%m_%dT%H-%M-%S"
-        exec_date_str = exec_date.strftime(exec_date_fmt)
-        sample_job_id = f"big_query_sample_{exec_date_str}_{uuid.uuid4()}"
-        job_location = "US"
+        LOCATION = os.environ["BQ_LOCATION"]
+    except KeyError:
+        pass
+    except:
+        raise
 
+    # Construct a BigQuery client object.
+    client = bigquery.Client()
+    storage_client = storage.client.Client()
+    project = client.project
+
+    my_dataset_id = "my_dataset"
+    bucket_name = "beam_sample_weather_dataset"
+
+    exec_date = datetime.utcnow()
+    exec_date_fmt = "%Y_%m_%dT%H-%M-%S"
+    exec_date_str = exec_date.strftime(exec_date_fmt)
+    sample_job_id = f"big_query_sample_{exec_date_str}_{uuid.uuid4()}"
+    job_location = LOCATION
+
+    # Create Dataset
+    print("=" * 30, "Create Dataset", "=" * 30)
+    my_dataset = create_dataset(client, my_dataset_id, job_location, project, timeout=TIMEOUT)
+
+    try:
+        # Listing datasets
+        show_existing_datasets(client, project)
+        # Update my_dataset properties
+        print("=" * 30, "Update my_dataset properties", "=" * 30)
+        description = "Update description @:{}".format(exec_date_str)
+        my_dataset = update_dataset_description(client, my_dataset_id, description)
+
+        print("=" * 30, "Query Job sample", "=" * 30)
         query_str_sample = """
             SELECT
             CONCAT(
@@ -37,23 +63,18 @@ def run():
                 CAST(id as STRING)) as url,
             view_count
             FROM `bigquery-public-data.stackoverflow.posts_questions`
-            WHERE tags like '%google-bigquery%'
+            WHERE tags like '%@tag%'
             ORDER BY view_count DESC
             LIMIT 1"""
-        results = query_job_sample(client, job_location, sample_job_id, query_str_sample, query_priority="BATCH")
+        query_params_sample = [
+            bigquery.ScalarQueryParameter("tag","STRING","google-bigquery") #named param
+            # bigquery.ScalarQueryParameter(None,"STRING","google-bigquery") #postional param
+            ]
+        dest_table_id_sample = "{}.{}.{}".format(project,my_dataset_id,"sample_query_table_id")
+        results = query_job_sample(client, job_location, sample_job_id, query_str_sample, query_params=query_params_sample, dest_table_id=dest_table_id_sample, query_priority="interactive")
         print_rows(results)
-
+        show_table_data(client,dest_table_id_sample)
         print_job_details(client, job_location, sample_job_id)
-
-        dataset_id = create_dataset(client, timeout=TIMEOUT)
-
-        # Listing datasets
-        show_existing_datasets(client, project)
-
-        # Update dataset properties
-        print("=" * 30, "Update dataset properties", "=" * 30)
-        description = "Update description @:{}".format(exec_date_str)
-        my_dataset = update_dataset_description(client, dataset_id, description)
 
         print("=" * 30, "Table and Schema", "=" * 30)
         table_name = "gsod_mini_10"
@@ -81,26 +102,25 @@ def run():
         table_file = "samples/gsod_mini_10.json"
 
         # Upload file to bucket
-        bucket_name = "beam_sample_weather_dataset"
         blob_name = "gsod_mini_10"
-        storage_client = storage.client.Client()
         create_bucket(storage_client, project, blob_name, bucket_name, table_file, exists_ok=False)
 
         # Insert row in table from URI
         table_load_job_id = f"big_query_sample_{exec_date_str}_{uuid.uuid4()}"
         table_uri = "gs://beam_sample_weather_dataset/gsod_mini_10"
         print("\t Load table from : URI \t")
-        table_from_uri = insert_rows_from_uri(client, job_location, my_dataset, table_name, table_schema, table_uri, table_load_job_id,timeout=TIMEOUT)
+        table_from_uri = insert_rows_from_uri(client, job_location, my_dataset, table_name, table_schema, table_uri,
+                                              table_load_job_id, timeout=TIMEOUT)
 
         # Copy Table(s)
         print("=" * 30, "Copy Tables", "=" * 30)
-        src_table1 = create_table(client, "src_table_1",table_schema, dataset=my_dataset)
+        src_table1 = create_table(client, "src_table_1", table_schema, dataset=my_dataset)
         copy_table(client, table_from_object, src_table1)
-        src_table2 = create_table(client, "src_table_2",table_schema, dataset=my_dataset)
+        src_table2 = create_table(client, "src_table_2", table_schema, dataset=my_dataset)
         copy_table(client, table_from_object, src_table2)
         dst_table = create_table(client, "dst_table", table_schema, dataset=my_dataset)
         copy_table(client, [src_table1, src_table2], dst_table, delete_source=False)
-        show_table_data(client,dst_table)
+        show_table_data(client, dst_table)
 
         print("=" * 30, "Record & REPEATED Schema", "=" * 30)
         table_schema.append(
@@ -123,13 +143,17 @@ def run():
         logging.error(error)
         raise error
     finally:
-        # Cleaning
-        print("=" * 30, "Cleaning ...", "=" * 30)
-        client.delete_dataset(my_dataset.dataset_id, delete_contents=True, not_found_ok=True)
-        print("Dataset {} deleted!".format(my_dataset.dataset_id))
-        bucket = storage_client.get_bucket(bucket_name)
-        bucket.delete(storage_client)
-        print("Bucket {} deleted!".format(bucket.name))
+        try:
+            # Cleaning
+            print("=" * 30, "Cleaning ...", "=" * 30)
+            client.delete_dataset(my_dataset.dataset_id, delete_contents=True, not_found_ok=True)
+            print("Dataset {} deleted!".format(my_dataset.dataset_id))
+            bucket = storage_client.get_bucket(bucket_name)
+            bucket.delete(storage_client)
+            print("Bucket {} deleted!".format(bucket.name))
+        except Exception as error:
+            logging.error("Error when cleaning resources.")
+            raise error
 
 
 def create_table(client, table_name, schema, project=None, dataset=None):
@@ -311,11 +335,11 @@ def update_dataset_description(client, dataset_id, description=None):
     :param description: The description
     :return: The dataset updated
     """
-    my_dataset = client.get_dataset(dataset_id)
-    my_dataset.description = description
-    client.update_dataset(my_dataset, ['description'])
-    print("\n - {} \t Description: {}".format(my_dataset.dataset_id, my_dataset.description))
-    return my_dataset
+    dataset = client.get_dataset(dataset_id)
+    dataset.description = description
+    client.update_dataset(dataset, ['description'])
+    print("\n - {} \t Description: {}".format(dataset.dataset_id, dataset.description))
+    return dataset
 
 
 def show_existing_datasets(client, project):
@@ -332,26 +356,31 @@ def show_existing_datasets(client, project):
             print("\n - {}".format(ds.dataset_id))
 
 
-def create_dataset(client, timeout=30):
+def create_dataset(client, dataset_id, location, project=None, timeout=30):
     """
     Create a dataset in the client default project
     :param client: BQ Client
+    :param dataset_id: Dataset ID str
+    :param location: BQ Dataset location
+    :param project: BQ Project default to client.project
     :param timeout: TIMEOUT
     :return: Datset ID
     """
-    dataset_id = "{}.bigquery_sample_dataset".format(client.project)
+    if project is None:
+        project = client.project
+    dataset_id = "{}.{}".format(project, dataset_id)
     # Construct a full Dataset object to send to the API.
     dataset = bigquery.Dataset(dataset_id)
-    dataset.location = "US"
+    dataset.location = location
     try:
         # Send the dataset to the API for creation, with an explicit timeout.
         dataset = client.create_dataset(dataset, timeout=timeout, exists_ok=True)  # Make an API request.
-        print("Created dataset {}.{}".format(client.project, dataset.dataset_id))
+        print("Created dataset {}.{}".format(project, dataset.dataset_id))
     except Exception as error:
         logging.error("Failed to create dataset {}".format(dataset_id))
         logging.error(error)
         raise
-    return dataset_id
+    return dataset
 
 
 def print_job_details(client, job_location, job_id):
@@ -368,22 +397,29 @@ def print_job_details(client, job_location, job_id):
     print("\tType: {}\n\tState: {}\n\tCreated: {}".format(job.job_type, job.state, job.created))
 
 
-def query_job_sample(client, job_location, job_id, query_str, query_priority="interactive"):
+def query_job_sample(client, job_location, job_id, query_str, query_params=None, dest_table_id=None,query_priority="interactive"):
     """
     Create and execute a query job
     :param client: BQ Client
     :param job_location: Job location
     :param job_id: Job ID
     :param query_str: The Query string
+    :param dest_table_id: Optional destination table that receive the query result
+    :param query_params : Optional query parameters if query is parametrized
     :param query_priority: Interactive by default or Batch
     :return: result job rows iterator
     """
-    print('\t Query Job \t')
     priorities = {"interactive": bigquery.QueryPriority.INTERACTIVE, "batch": bigquery.QueryPriority.BATCH}
+    job_priority = priorities.get(query_priority.lower())
+    print('\t Query Job : Mode : {} \t'.format(job_priority))
+    print("Location: {}\tJob ID:{}\tDestination Table:{}".format(job_location, job_id, dest_table_id))
     sample_job_conf = bigquery.QueryJobConfig(
         use_legacy_sql=False,
         labels={"name": "bq_example"},
-        priority = priorities.get(query_priority.lower()),
+        priority=job_priority,
+        query_parameters=query_params,
+        destination=dest_table_id,
+        dry_run=False,
         clustering=None
     )
     query_job = client.query(
@@ -392,7 +428,10 @@ def query_job_sample(client, job_location, job_id, query_str, query_priority="in
         job_config=sample_job_conf,
         job_id=job_id
     )
-    results = query_job.result()  # Waits for job to complete.
+    # sample_job_conf.dry_run = True
+    # size = int(query_job.total_bytes_processed / (8 * 1024 ) )
+    # print("This query will process {} KB.".format(size))
+    results = query_job .result()  # Waits for job to complete.
     return results
 
 
@@ -403,7 +442,7 @@ def print_rows(results):
         print(row)
 
 
-def show_table_data(client,table,max_result=10):
+def show_table_data(client, table, max_result=10):
     # Print row data in tabular format.
     rows = client.list_rows(table, max_results=max_result)
     format_string = "{!s:<16} " * len(rows.schema)
@@ -411,6 +450,7 @@ def show_table_data(client,table,max_result=10):
     print(format_string.format(*field_names))  # Prints column headers.
     for row in rows:
         print(format_string.format(*row))  # Prints row data.
+
 
 if __name__ == "__main__":
     logging.basicConfig(format='%(levelname)s:%(message)s', level=logging.INFO)
