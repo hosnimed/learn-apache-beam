@@ -40,10 +40,10 @@ def run():
             WHERE tags like '%google-bigquery%'
             ORDER BY view_count DESC
             LIMIT 1"""
-        # results = query_job_sample(client, job_location, sample_job_id, query_str_sample)
-        # print_rows(results)
+        results = query_job_sample(client, job_location, sample_job_id, query_str_sample, query_priority="BATCH")
+        print_rows(results)
 
-        # print_job_details(client, job_location, sample_job_id)
+        print_job_details(client, job_location, sample_job_id)
 
         dataset_id = create_dataset(client, timeout=TIMEOUT)
 
@@ -368,19 +368,22 @@ def print_job_details(client, job_location, job_id):
     print("\tType: {}\n\tState: {}\n\tCreated: {}".format(job.job_type, job.state, job.created))
 
 
-def query_job_sample(client, job_location, job_id, query_str):
+def query_job_sample(client, job_location, job_id, query_str, query_priority="interactive"):
     """
     Create and execute a query job
     :param client: BQ Client
     :param job_location: Job location
     :param job_id: Job ID
     :param query_str: The Query string
+    :param query_priority: Interactive by default or Batch
     :return: result job rows iterator
     """
     print('\t Query Job \t')
+    priorities = {"interactive": bigquery.QueryPriority.INTERACTIVE, "batch": bigquery.QueryPriority.BATCH}
     sample_job_conf = bigquery.QueryJobConfig(
         use_legacy_sql=False,
         labels={"name": "bq_example"},
+        priority = priorities.get(query_priority.lower()),
         clustering=None
     )
     query_job = client.query(
