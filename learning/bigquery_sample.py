@@ -1,33 +1,67 @@
-import os
 import sys
+import os
 import uuid
 import logging
 import time
+import copy
+import random
 
-from datetime import datetime
+from dataclasses import dataclass
+from datetime import date, datetime, timedelta, timezone
+from dateutil import tz
+from pytz import timezone, all_timezones_set
 from urllib3.util import Retry
+from waiting import wait, TimeoutExpired
 
 from google.cloud.exceptions import Conflict
 from google.api_core.exceptions import NotFound
+from google.api_core.exceptions import GoogleAPICallError
 
 from google.cloud import storage
 from google.cloud.storage import Bucket
 
 from google.cloud import bigquery
+from google.cloud.bigquery import QueryJob
 from google.cloud.bigquery import Table
+from google.cloud.bigquery import TimePartitioning
+from google.cloud.bigquery import TimePartitioningType
+from google.cloud.bigquery import RangePartitioning
+from google.cloud.bigquery import PartitionRange
 
+@dataclass
+class PartitionTimeFilter:
+    exact_time : datetime    = None
+    lower_bound_datetime : datetime = None
+    upper_bound_datetime : datetime = None
+
+TIME_ZONE = "Europe/Paris"
+TIME_ZONE_FMT = "%Y-%m-%d %H:%M:%S %Z%z"
+TIMEOUT = 10
+RETRY = Retry(backoff_factor=3)
+MAX_RETRIES = 10
 
 def run():
-    TIMEOUT = 10
-    RETRY = Retry(backoff_factor=3)
-    MAX_RETRIES = 10
+    CLEANING = True
     LOCATION = "US"
     try:
-        LOCATION = os.environ["BQ_LOCATION"]
+        env = os.getenv("BQ_CLEANING")
+        if env is not None:
+            CLEANING = True if env.lower() == "true" else False
     except KeyError:
+        logging.error("BQ_CLEANING system env not found.")
         pass
     except:
         raise
+    print(f"BQ_CLEANING : {CLEANING}")
+    try:
+        env = os.getenv("BQ_LOCATION")
+        if env is not None:
+            LOCATION = env.upper()
+    except KeyError:
+        logging.error("BQ_LOCATION system env not found.")
+    except:
+        raise
+    print(f"BQ_LOCATION : {LOCATION}")
 
     # Construct a BigQuery client object.
     client = bigquery.Client()
@@ -44,18 +78,18 @@ def run():
     job_location = LOCATION
 
     # Create Dataset
-    print("=" * 30, "Create Dataset", "=" * 30)
+    print("=" * 50, "Create Dataset", "=" * 50)
     my_dataset = create_dataset(client, my_dataset_id, job_location, project, timeout=TIMEOUT)
 
     try:
         # Listing datasets
-        show_existing_datasets(client, project)
+        # show_existing_datasets(client, project)
         # Update my_dataset properties
-        print("=" * 30, "Update my_dataset properties", "=" * 30)
-        description = "Update description @:{}".format(exec_date_str)
-        my_dataset = update_dataset_description(client, my_dataset_id, description)
+        # print("=" * 50, "Update my_dataset properties", "=" * 50)
+        # description = "Update description @:{}".format(exec_date_str)
+        # my_dataset = update_dataset_description(client, my_dataset_id, description)
 
-        print("=" * 30, "Query Job sample", "=" * 30)
+        print("=" * 50, "Query Job sample", "=" * 50)
         query_str_sample = """
             SELECT
             CONCAT(
@@ -69,14 +103,14 @@ def run():
         query_params_sample = [
             bigquery.ScalarQueryParameter("tag","STRING","google-bigquery") #named param
             # bigquery.ScalarQueryParameter(None,"STRING","google-bigquery") #postional param
-            ]
+        ]
         dest_table_id_sample = "{}.{}.{}".format(project,my_dataset_id,"sample_query_table_id")
-        results = query_job_sample(client, job_location, sample_job_id, query_str_sample, query_params=query_params_sample, dest_table_id=dest_table_id_sample, query_priority="interactive")
-        print_rows(results)
-        show_table_data(client,dest_table_id_sample)
-        print_job_details(client, job_location, sample_job_id)
+        # results = query_job_sample(client, job_location, sample_job_id, query_str_sample, query_params=query_params_sample, dest_table_id=dest_table_id_sample, query_priority="interactive")
+        # print_rows(results)
+        # show_table_data(client,dest_table_id_sample)
+        # print_job_details(client, job_location, sample_job_id)
 
-        print("=" * 30, "Table and Schema", "=" * 30)
+        print("=" * 50, "Table and Schema", "=" * 50)
         table_name = "gsod_mini_10"
         table_id = "{}.{}".format(my_dataset.dataset_id, table_name)
         table_schema = [
@@ -96,7 +130,8 @@ def run():
             (1000, 2020, 12, 25, float(18.30), float(5.50), True, False)
         ]
         table_rows_ids = range(len(table_rows))
-        table_from_object = insert_rows_from_object(client, my_dataset, table_name, table_rows, table_schema)
+        table_from_object = insert_rows_from_object(client, my_dataset, table_name, table_rows, table_schema, table_rows_ids=table_rows_ids)
+        show_table_data(client, table_from_object)
 
         # Insert row in table from Local File
         table_file = "samples/gsod_mini_10.json"
@@ -109,20 +144,69 @@ def run():
         table_load_job_id = f"big_query_sample_{exec_date_str}_{uuid.uuid4()}"
         table_uri = "gs://beam_sample_weather_dataset/gsod_mini_10"
         print("\t Load table from : URI \t")
-        table_from_uri = insert_rows_from_uri(client, job_location, my_dataset, table_name, table_schema, table_uri,
-                                              table_load_job_id, timeout=TIMEOUT)
+        # table_from_uri = insert_rows_from_uri(client, job_location, my_dataset, table_name, table_schema, table_uri,table_load_job_id, timeout=TIMEOUT)
+
+        print("=" * 50, "Table Partitioning", "=" * 50)
+        table_partition_insert_job_id = f"big_query_sample_{exec_date_str}_{uuid.uuid4()}"
+        table_partitioned_schema = [
+            bigquery.SchemaField("name","STRING"),
+            bigquery.SchemaField("age","INTEGER"),
+            bigquery.SchemaField("dob","DATE")
+        ]
+        print("\tTime Partitioned\t")
+        table_time_partitioned_name = "my_table_time_partitioned"
+        table_time_partitioned = create_table(client, table_time_partitioned_name, table_partitioned_schema, project, my_dataset, partitioning_type="time", partitioned_field=None)
+        utc_time_now = datetime.now(timezone('UTC'))
+        utc_time_plus_1_hour = utc_time_now + timedelta(hours=1)
+        age_1 = 30
+        age_2 = 50
+        table_time_partitioned_data = (
+            (f"John", age_1, date.today().replace(date.today().year-age_1, 4, 1).strftime("%Y-%m-%d")),
+            (f"Jake", age_2, date.today().replace(date.today().year-age_2, 4, 1).strftime("%Y-%m-%d")),
+        )
+            # [{"name":f"Person-{uuid.uuid4()}", "age":int(30*random.random()), "dob":date.today().replace(1990,4,1)        }]
+        insert_rows_from_object_partition_aware(client,job_location,table_partition_insert_job_id,my_dataset,table_time_partitioned_name,table_time_partitioned_data,table_partitioned_schema,create_table_bool=False)
+        show_table_data(client,table_time_partitioned)
+        # Query partitioned table
+        partition_job_id = f"big_query_sample_{exec_date_str}_{uuid.uuid4()}"
+        partition_query_str = """
+        SELECT _PARTITIONTIME AS pt,
+        name, age, dob
+        FROM {}.{}.{}
+        """.format(project,my_dataset_id,table_time_partitioned_name)
+        utc_exact_date = utc_time_now.replace(minute=0,second=0,microsecond=0)
+        utc_lower_bound = utc_time_now.replace(minute=0,second=0,microsecond=0)
+        utc_upper_bound = utc_time_plus_1_hour.replace(minute=0,second=0,microsecond=0)
+        local_exact_date = utc_to_local(utc_exact_date)
+        local_lower_bound = utc_to_local(utc_lower_bound)
+        local_upper_bound = utc_to_local(utc_upper_bound)
+        print("+"*100)
+        print(local_exact_date.strftime(TIME_ZONE_FMT))
+        print(local_lower_bound.strftime(TIME_ZONE_FMT))
+        print(local_upper_bound.strftime(TIME_ZONE_FMT))
+        print("+"*100)
+        results = query_job_partition_aware(client, job_location, partition_job_id, partition_query_str,
+                                            partition_time_filter=PartitionTimeFilter(lower_bound_datetime=utc_lower_bound),
+                                            zone_partition_time_filter=PartitionTimeFilter(exact_time=None,lower_bound_datetime=local_lower_bound,upper_bound_datetime=local_upper_bound),
+                                            use_partition_time_filter=True,
+                                            use_zone_partition_time_filter=True)
+        print_rows(results)
+        # print("\tRange Partitioned\t")
+        table_range_partitioned_name = "my_table_range_partitioned"
+        table_range_partitioned = create_table(client, table_range_partitioned_name, table_partitioned_schema, project,my_dataset, partitioning_type="range", partitioned_field="age")
+        show_table_data(client, table_range_partitioned)
 
         # Copy Table(s)
-        print("=" * 30, "Copy Tables", "=" * 30)
-        src_table1 = create_table(client, "src_table_1", table_schema, dataset=my_dataset)
-        copy_table(client, table_from_object, src_table1)
-        src_table2 = create_table(client, "src_table_2", table_schema, dataset=my_dataset)
-        copy_table(client, table_from_object, src_table2)
-        dst_table = create_table(client, "dst_table", table_schema, dataset=my_dataset)
-        copy_table(client, [src_table1, src_table2], dst_table, delete_source=False)
-        show_table_data(client, dst_table)
+        print("=" * 50, "Copy Tables", "=" * 50)
+        # src_table1 = create_table(client, "src_table_1", table_schema, dataset=my_dataset)
+        # copy_table(client, table_from_object, src_table1)
+        # src_table2 = create_table(client, "src_table_2", table_schema, dataset=my_dataset)
+        # copy_table(client, table_from_object, src_table2)
+        # dst_table = create_table(client, "dst_table", table_schema, dataset=my_dataset)
+        # copy_table(client, [src_table1, src_table2], dst_table, delete_source=False)
+        # show_table_data(client, dst_table)
 
-        print("=" * 30, "Record & REPEATED Schema", "=" * 30)
+        print("=" * 50, "Record & REPEATED Schema", "=" * 50)
         table_schema.append(
             bigquery.SchemaField(
                 "addresses", "RECORD",
@@ -144,19 +228,20 @@ def run():
         raise error
     finally:
         try:
-            # Cleaning
-            print("=" * 30, "Cleaning ...", "=" * 30)
-            client.delete_dataset(my_dataset.dataset_id, delete_contents=True, not_found_ok=True)
-            print("Dataset {} deleted!".format(my_dataset.dataset_id))
-            bucket = storage_client.get_bucket(bucket_name)
-            bucket.delete(storage_client)
-            print("Bucket {} deleted!".format(bucket.name))
+            if CLEANING:
+                # Cleaning
+                print("=" * 50, "Cleaning ...", "=" * 50)
+                client.delete_dataset(my_dataset.dataset_id, delete_contents=True, not_found_ok=True)
+                print("Dataset {} deleted!".format(my_dataset.dataset_id))
+                bucket = storage_client.get_bucket(bucket_name)
+                bucket.delete(storage_client)
+                print("Bucket {} deleted!".format(bucket.name))
         except Exception as error:
             logging.error("Error when cleaning resources.")
             raise error
 
 
-def create_table(client, table_name, schema, project=None, dataset=None):
+def create_table(client, table_name, schema, project=None, dataset=None, partitioning_type=None, partitioned_field=None):
     """
     Create Table with Schema
     :param client: BQ Client
@@ -164,8 +249,14 @@ def create_table(client, table_name, schema, project=None, dataset=None):
     :param schema: Table Schema
     :param project: default to client.project
     :param dataset: default to client.dataset
+    :param partitioning_type: either : `time` or `range` partitioned
+    :param partitioned_field: field name use for partitionning
     :return: created table
     """
+    partitioning_types = {
+        "time" : TimePartitioning(type_= TimePartitioningType.HOUR, field=partitioned_field, require_partition_filter=True),
+        "range" : RangePartitioning(range_= PartitionRange(start=0, end=100, interval=10), field=partitioned_field)
+    }
     try:
         if project is None:
             project = client.project
@@ -174,7 +265,16 @@ def create_table(client, table_name, schema, project=None, dataset=None):
         logging.info("Project: {}\tDataset: {}\tTable: {}".format(project, dataset.dataset_id, table_name))
         table_id = "{}.{}.{}".format(project, dataset.dataset_id, table_name)
         table = bigquery.Table(table_id, schema=schema)
-        client.create_table(table)
+        if partitioning_type:
+            partitioning_type = partitioning_type.lower()
+            if partitioning_type == "time":
+                logging.info("Table Partitioning: {}".format(partitioning_type))
+                schema.append(bigquery.SchemaField("ZONE_PARTITIONTIME","TIMESTAMP"))
+                table.schema = schema
+                table.time_partitioning = partitioning_types.get(partitioning_type)
+            elif partitioning_type == "range":
+                table.range_partitioning = partitioning_types.get(partitioning_type)
+        client.create_table(table, exists_ok=True)
         table = client.get_table(table)
         logging.info("Table {} created successfully.".format(table_id))
         return table
@@ -289,7 +389,7 @@ def create_bucket(storage_client, project, blob_name, bucket_name, table_file, e
         raise
 
 
-def insert_rows_from_object(client, dataset, table_name, table_rows, table_schema, table_rows_ids=None, max_retries=3):
+def insert_rows_from_object(client, dataset, table_name, table_rows, table_schema, table_rows_ids=None, create_table_bool=True, max_retries=3):
     """
     Insert rows to a table from a sequence
     :param client: BQ Client
@@ -298,29 +398,108 @@ def insert_rows_from_object(client, dataset, table_name, table_rows, table_schem
     :param table_rows: The sequence data
     :param table_schema: The table schema
     :param table_rows_ids: The table rows ids, default ot : range(len(table_row))
+    :param create_table_bool: Boolean, default to True
     :param max_retries: Max retries, default to 3
-    :return: The created Table
+    :return: The updated Table
     """
     try:
         print("Insert {} rows to Table: {}.{}".format(len(table_rows), dataset.dataset_id, table_name))
-        table = create_table(client, table_name, table_schema, dataset=dataset)
-        full_table_id = table.full_table_id \
-            if table.full_table_id is not None \
-            else "{}.{}.{}".format(client.project, dataset, table_name)
-        full_table_id = str.replace(full_table_id, ":", ".")
-        logging.info("FULL_TABLE_ID :: {}".format(full_table_id))
+        full_table_id = "{}.{}.{}".format(client.project, dataset.dataset_id, table_name)
+        logging.info("Full_Table_ID :: {}".format(full_table_id))
+        table = create_table(client, table_name, table_schema,dataset=dataset) if create_table_bool else client.get_table(full_table_id)
         table_rows_ids = range(len(table_rows)) if table_rows_ids is None else table_rows_ids
         num_rows = 0
         retries = 0
         while num_rows == 0 and retries < max_retries:
             errors = client.insert_rows(table, table_rows, row_ids=table_rows_ids)
             print("Try to insert rows.\tErrors : {}".format(errors))
-            query_job = client.query(query="SELECT * FROM {}".format(full_table_id))
-            results = query_job.result()
-            num_rows = results.total_rows
+            table = client.get_table(table)
+            num_rows = table.num_rows
             retries += 1
             time.sleep(3)
         return table
+    except GoogleAPICallError as api_error:
+            logging.error("Error occurred when calling BQ API:\nErrorCode: {}\tErrorMessage: {}\t".format(api_error.code,api_error.message))
+    except Exception as error:
+        logging.error("Can not insert rows in table.")
+        logging.error(error)
+        raise
+
+
+def insert_rows_from_object_partition_aware(client, job_location, job_id, dataset, table_name, table_rows:tuple, table_schema, create_table_bool=True):
+    """
+    Insert rows to a table from a sequence considering table partitioning
+    :param job_id:
+    :param job_location:
+    :param client: BQ Client
+    :param dataset: BQ Dataset
+    :param table_name: The table string name
+    :param table_rows: The sequence data
+    :param table_schema: The table schema
+    :param table_rows_ids: The table rows ids, default ot : range(len(table_row))
+    :param create_table_bool: Boolean, default to True
+    :param max_retries: Max retries, default to 3
+    :return: The updated Table
+    """
+
+    def update_row(rows):
+        extended = []
+        for row in rows:
+            tuple_to_list = list(row)
+            current_datetime_hour_granularity = datetime.utcnow().replace(minute=0, second=0).strftime("%Y-%m-%d %H:%M:%S")
+            tuple_to_list.insert(0, current_datetime_hour_granularity)
+            tuple_to_list.insert(len(tuple_to_list), current_datetime_hour_granularity)
+            row = tuple(tuple_to_list)
+            extended.append(row)
+        extended=str(tuple(extended))
+        return extended [1:-1]
+
+    def field_names(schema):
+        names = [field.name for field in schema]
+        extended = "_PARTITIONTIME, " + ", ".join(names)
+        return extended
+    '''
+    def fields_params(schema,rows):
+
+        for field in schema:
+            for row in rows:
+                utcnow = datetime.utcnow()
+                partition_time = utcnow.replace(hour=0,minute=0,second=0,microsecond=0)
+                print(f"partition_time == {partition_time}")
+                query_param = [   bigquery.ScalarQueryParameter('_PARTITIONTIME', 'TIMESTAMP', utcnow),
+                                  bigquery.ScalarQueryParameter('name', 'STRING', row["name"]),
+                                  bigquery.ScalarQueryParameter('age', 'INTEGER', row["age"]),
+                                  bigquery.ScalarQueryParameter('dob', 'DATE', row["dob"]),
+                                  bigquery.ScalarQueryParameter('ZONE_PARTITIONTIME', 'TIMESTAMP', utcnow)
+                                ]
+    def field_values(rows):
+        values = []
+        print(f"type row : {type(rows[0])}")
+        if isinstance(rows[0], dict):
+            values = [tuple(str(v) for k,v in d.items()) for d in rows]
+        else:
+            values = rows
+        print(f"values:\n{values}")
+        return values
+    '''
+    try:
+        full_table_id = "{}.{}.{}".format(client.project, dataset.dataset_id, table_name)
+        table = create_table(client, table_name, table_schema,dataset=dataset, partitioning_type="time") if create_table_bool else client.get_table(full_table_id)
+        # Partition Time Table
+        insert_query_str = """
+        INSERT INTO `{}` ({})
+        VALUES {}
+        ;
+        """
+        if table.time_partitioning :
+            insert_query_str = insert_query_str.format(full_table_id,field_names(table_schema), update_row(table_rows))
+        else:
+            insert_query_str = insert_query_str.format(full_table_id,", ".join([field.name for field in table_schema]),table_rows)
+        results = query_job_partition_aware(client, job_location, job_id, insert_query_str,
+                                            use_partition_time_filter=False)
+        return results
+    except GoogleAPICallError as api_error:
+        logging.error("Error occurred when calling BQ API:\nErrorCode: {}\tErrorMessage: {}\t".format(api_error.code,api_error.message))
     except Exception as error:
         logging.error("Can not load table data.")
         logging.error(error)
@@ -411,8 +590,11 @@ def query_job_sample(client, job_location, job_id, query_str, query_params=None,
     """
     priorities = {"interactive": bigquery.QueryPriority.INTERACTIVE, "batch": bigquery.QueryPriority.BATCH}
     job_priority = priorities.get(query_priority.lower())
-    print('\t Query Job : Mode : {} \t'.format(job_priority))
-    print("Location: {}\tJob ID:{}\tDestination Table:{}".format(job_location, job_id, dest_table_id))
+    logging.info('\t Query Job : Mode : {} \t'.format(job_priority))
+    logging.info("Location: {}\tJob ID:{}\tDestination Table:{}".format(job_location, job_id, dest_table_id))
+    logging.info("\t/---------------Query------------------\\")
+    logging.info(query_str)
+    logging.info("\t\---------------Query------------------/")
     sample_job_conf = bigquery.QueryJobConfig(
         use_legacy_sql=False,
         labels={"name": "bq_example"},
@@ -421,31 +603,79 @@ def query_job_sample(client, job_location, job_id, query_str, query_params=None,
         destination=dest_table_id,
         dry_run=False,
         clustering=None
-    )
-    query_job = client.query(
+        )
+    query_job: QueryJob = client.query(
         location=job_location,
         query=query_str,
         job_config=sample_job_conf,
         job_id=job_id
     )
+    # logging.info(query_job.query_parameters)
     # sample_job_conf.dry_run = True
     # size = int(query_job.total_bytes_processed / (8 * 1024 ) )
     # print("This query will process {} KB.".format(size))
-    results = query_job .result()  # Waits for job to complete.
-    return results
+    try:
+        results = query_job.result()  # Waits for job to complete.
+        wait(lambda: results) is results
+        return results
+    except TimeoutExpired:
+        logging.error("Timeout waiting expired !")
+        raise
 
+
+def query_job_partition_aware(client, job_location, job_id, query_str, partition_time_filter:PartitionTimeFilter=None, zone_partition_time_filter:PartitionTimeFilter=None, use_partition_time_filter=False, use_zone_partition_time_filter=False, query_params=[], dest_table_id=None, query_priority="interactive"):
+    try:
+        query_str_extended = query_str
+        if use_partition_time_filter:
+            (exact_time, lower_bound_utc_datetime, upper_bound_utc_datetime) = (partition_time_filter.exact_time, partition_time_filter.lower_bound_datetime, partition_time_filter.upper_bound_datetime)
+            if exact_time:
+                query_str_extended = query_str + "WHERE _PARTITIONTIME = CAST('{}' AS TIMESTAMP)".format(exact_time)
+            elif lower_bound_utc_datetime and not upper_bound_utc_datetime:
+                query_str_extended = query_str + "WHERE _PARTITIONTIME >= CAST('{}' AS TIMESTAMP)".format(lower_bound_utc_datetime)
+            elif upper_bound_utc_datetime and not lower_bound_utc_datetime:
+                query_str_extended = query_str + "WHERE _PARTITIONTIME <= CAST('{}' AS TIMESTAMP)".format(upper_bound_utc_datetime)
+            elif lower_bound_utc_datetime and upper_bound_utc_datetime:
+                query_str_extended = query_str + "WHERE _PARTITIONTIME BETWEEN CAST('{}' AS TIMESTAMP) AND CAST('{}' AS TIMESTAMP)".format(lower_bound_utc_datetime, upper_bound_utc_datetime)
+            if use_zone_partition_time_filter:
+                (exact_time, lower_bound_utc_datetime, upper_bound_utc_datetime) = (zone_partition_time_filter.exact_time, zone_partition_time_filter.lower_bound_datetime, zone_partition_time_filter.upper_bound_datetime)
+                if exact_time:
+                    query_str_extended += "\n\tAND TIMESTAMP_ADD(ZONE_PARTITIONTIME, INTERVAL 1 HOUR) = CAST('{}' AS TIMESTAMP)".format(exact_time)
+                elif lower_bound_utc_datetime and not upper_bound_utc_datetime:
+                    query_str_extended += "\n\tAND TIMESTAMP_ADD(ZONE_PARTITIONTIME, INTERVAL 1 HOUR) >= CAST('{}' AS TIMESTAMP)".format(
+                        lower_bound_utc_datetime)
+                elif upper_bound_utc_datetime and not lower_bound_utc_datetime:
+                    query_str_extended += "\n\tAND TIMESTAMP_ADD(ZONE_PARTITIONTIME, INTERVAL 1 HOUR) <= CAST('{}' AS TIMESTAMP)".format(
+                        upper_bound_utc_datetime)
+                elif lower_bound_utc_datetime and upper_bound_utc_datetime:
+                    query_str_extended += "\n\tAND TIMESTAMP_ADD(ZONE_PARTITIONTIME, INTERVAL 1 HOUR) BETWEEN CAST('{}' AS TIMESTAMP) AND CAST('{}' AS TIMESTAMP)".format(
+                        lower_bound_utc_datetime, upper_bound_utc_datetime)
+
+        results = query_job_sample(client,job_location,job_id,query_str_extended,query_params)
+        return results
+    except Exception as error:
+        logging.error("Can not extend query job with time based filter partition")
+        logging.error(error)
+        raise
+
+
+def utc_to_local(utc_datetime:datetime, tz_info=TIME_ZONE):
+    if isinstance(utc_datetime, datetime):
+        local_datetime = utc_datetime.astimezone(tz=timezone(tz_info))
+        return local_datetime
+    else:
+        return utc_datetime
 
 def print_rows(results):
     result_list = list(results)
     print("Rows Count : {}".format(len(result_list)))
     for row in result_list:
-        print(row)
+        print(row),
 
 
 def show_table_data(client, table, max_result=10):
     # Print row data in tabular format.
     rows = client.list_rows(table, max_results=max_result)
-    format_string = "{!s:<16} " * len(rows.schema)
+    format_string = "{!s:<20} " * len(rows.schema)
     field_names = [field.name for field in rows.schema]
     print(format_string.format(*field_names))  # Prints column headers.
     for row in rows:

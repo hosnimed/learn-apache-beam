@@ -16,6 +16,7 @@ google-resumable-media = "*"
 apache-beam = {extras = ["gcp"], version = "*"}
 google-cloud-storage = "*"
 google-cloud-bigquery = "2.6.1"
+waiting = "*"
 
 [requires]
 python_version = "3.8"
