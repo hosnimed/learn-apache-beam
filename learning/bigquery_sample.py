@@ -165,7 +165,7 @@ def run():
             (f"Jake", age_2, date.today().replace(date.today().year-age_2, 4, 1).strftime("%Y-%m-%d")),
         )
             # [{"name":f"Person-{uuid.uuid4()}", "age":int(30*random.random()), "dob":date.today().replace(1990,4,1)        }]
-        insert_rows_from_object_partition_aware(client,job_location,table_partition_insert_job_id,my_dataset,table_time_partitioned_name,table_time_partitioned_data,table_partitioned_schema,create_table_bool=False)
+        insert_rows_from_object_partition_cluster_aware(client, job_location, table_partition_insert_job_id, my_dataset, table_time_partitioned_name, table_time_partitioned_data, table_partitioned_schema, partitioning_type="time", create_table_bool=False)
         show_table_data(client,table_time_partitioned)
         # Query partitioned table
         partition_job_id = f"big_query_sample_{exec_date_str}_{uuid.uuid4()}"
@@ -185,16 +185,34 @@ def run():
         print(local_lower_bound.strftime(TIME_ZONE_FMT))
         print(local_upper_bound.strftime(TIME_ZONE_FMT))
         print("+"*100)
-        results = query_job_partition_aware(client, job_location, partition_job_id, partition_query_str,
-                                            partition_time_filter=PartitionTimeFilter(lower_bound_datetime=utc_lower_bound),
-                                            zone_partition_time_filter=PartitionTimeFilter(exact_time=None,lower_bound_datetime=local_lower_bound,upper_bound_datetime=local_upper_bound),
-                                            use_partition_time_filter=True,
-                                            use_zone_partition_time_filter=True)
-        print_rows(results)
-        # print("\tRange Partitioned\t")
-        table_range_partitioned_name = "my_table_range_partitioned"
-        table_range_partitioned = create_table(client, table_range_partitioned_name, table_partitioned_schema, project,my_dataset, partitioning_type="range", partitioned_field="age")
-        show_table_data(client, table_range_partitioned)
+        # results = query_job_partition_aware(client, job_location, partition_job_id, partition_query_str,
+        #                                     partition_time_filter=PartitionTimeFilter(lower_bound_datetime=utc_lower_bound),
+        #                                     zone_partition_time_filter=PartitionTimeFilter(exact_time=None,lower_bound_datetime=local_lower_bound,upper_bound_datetime=local_upper_bound),
+        #                                     use_partition_time_filter=True,
+        #                                     use_zone_partition_time_filter=True)
+        # print_rows(results)
+        print("\tRange Partitioned\t")
+        # table_range_partitioned_name = "my_table_range_partitioned"
+        # table_range_partitioned = create_table(client, table_range_partitioned_name, table_partitioned_schema, project,my_dataset, partitioning_type="range", partitioned_field="age")
+        # show_table_data(client, table_range_partitioned)
+
+        print("=" * 50, "Table Clustering", "=" * 50)
+        # Clustering
+        cluster_job_id = f"big_query_sample_{exec_date_str}_{uuid.uuid4()}"
+        clustered_table_name = "my_clustered_table"
+        clustered_table_schema = [
+            bigquery.SchemaField("name","STRING"),
+            bigquery.SchemaField("age","INTEGER"),
+            bigquery.SchemaField("dob","DATE")
+        ]
+        clustered_table_rows = (
+            (f"Person_Cluster_001", age_1, date.today().replace(date.today().year-age_1, 1, 1).strftime("%Y-%m-%d")),
+            (f"Person_Cluster_002", age_2, date.today().replace(date.today().year-age_2, 1, 1).strftime("%Y-%m-%d")),
+        )
+        clustering_fields = ["age", "dob"]
+        create_table(client, clustered_table_name, clustered_table_schema,project, my_dataset, clustering_fields=clustering_fields, partitioning_type=None)
+        insert_rows_from_object_partition_cluster_aware(client, job_location, cluster_job_id, my_dataset, clustered_table_name, clustered_table_rows, clustered_table_schema, partitioning_type=None, clustering_fields=clustering_fields, create_table_bool=False)
+        show_table_data(client, "{}.{}.{}".format(project,my_dataset.dataset_id,clustered_table_name))
 
         # Copy Table(s)
         print("=" * 50, "Copy Tables", "=" * 50)
@@ -241,7 +259,7 @@ def run():
             raise error
 
 
-def create_table(client, table_name, schema, project=None, dataset=None, partitioning_type=None, partitioned_field=None):
+def create_table(client, table_name, schema, project=None, dataset=None, partitioning_type=None, partitioned_field=None, clustering_fields=None):
     """
     Create Table with Schema
     :param client: BQ Client
@@ -251,6 +269,7 @@ def create_table(client, table_name, schema, project=None, dataset=None, partiti
     :param dataset: default to client.dataset
     :param partitioning_type: either : `time` or `range` partitioned
     :param partitioned_field: field name use for partitionning
+    :param clustering_fields: fields to use for clustering
     :return: created table
     """
     partitioning_types = {
@@ -262,10 +281,10 @@ def create_table(client, table_name, schema, project=None, dataset=None, partiti
             project = client.project
         if dataset is None:
             dataset = client.dataset
-        logging.info("Project: {}\tDataset: {}\tTable: {}".format(project, dataset.dataset_id, table_name))
+        logging.info("Project: {}\tDataset: {}\tTable: {}\t\tPartitioning Type:{}".format(project, dataset.dataset_id, table_name, partitioning_type))
         table_id = "{}.{}.{}".format(project, dataset.dataset_id, table_name)
         table = bigquery.Table(table_id, schema=schema)
-        if partitioning_type:
+        if partitioning_type is not None:
             partitioning_type = partitioning_type.lower()
             if partitioning_type == "time":
                 logging.info("Table Partitioning: {}".format(partitioning_type))
@@ -274,6 +293,8 @@ def create_table(client, table_name, schema, project=None, dataset=None, partiti
                 table.time_partitioning = partitioning_types.get(partitioning_type)
             elif partitioning_type == "range":
                 table.range_partitioning = partitioning_types.get(partitioning_type)
+        if clustering_fields is not None:
+            table.clustering_fields = clustering_fields
         client.create_table(table, exists_ok=True)
         table = client.get_table(table)
         logging.info("Table {} created successfully.".format(table_id))
@@ -426,7 +447,7 @@ def insert_rows_from_object(client, dataset, table_name, table_rows, table_schem
         raise
 
 
-def insert_rows_from_object_partition_aware(client, job_location, job_id, dataset, table_name, table_rows:tuple, table_schema, create_table_bool=True):
+def insert_rows_from_object_partition_cluster_aware(client, job_location, job_id, dataset, table_name, table_rows:tuple, table_schema, partitioning_type="time", clustering_fields=None, create_table_bool=True):
     """
     Insert rows to a table from a sequence considering table partitioning
     :param job_id:
@@ -454,10 +475,6 @@ def insert_rows_from_object_partition_aware(client, job_location, job_id, datase
         extended=str(tuple(extended))
         return extended [1:-1]
 
-    def field_names(schema):
-        names = [field.name for field in schema]
-        extended = "_PARTITIONTIME, " + ", ".join(names)
-        return extended
     '''
     def fields_params(schema,rows):
 
@@ -482,21 +499,31 @@ def insert_rows_from_object_partition_aware(client, job_location, job_id, datase
         print(f"values:\n{values}")
         return values
     '''
+
+    def field_names(schema):
+        names = [field.name for field in schema]
+        extended = "_PARTITIONTIME, " + ", ".join(names)
+        return extended
     try:
         full_table_id = "{}.{}.{}".format(client.project, dataset.dataset_id, table_name)
-        table = create_table(client, table_name, table_schema,dataset=dataset, partitioning_type="time") if create_table_bool else client.get_table(full_table_id)
+        print(f"INSERT_ROWS_FROM_OBJECT_PARTITION_CLUSTER_AWARE : \t FULL_TABLE_ID : {full_table_id} \n\t\t PartitioningType : {partitioning_type} \t ClusteringFields : {clustering_fields}")
+        if create_table_bool:
+            table = create_table(client, table_name, table_schema,dataset=dataset, partitioning_type=partitioning_type, clustering_fields=clustering_fields)
+        else:
+            table = client.get_table(full_table_id)
         # Partition Time Table
         insert_query_str = """
         INSERT INTO `{}` ({})
         VALUES {}
         ;
         """
-        if table.time_partitioning :
+        if table.time_partitioning is not None:
+            print(f"Table . TimePartitioning : {table.time_partitioning}")
             insert_query_str = insert_query_str.format(full_table_id,field_names(table_schema), update_row(table_rows))
         else:
-            insert_query_str = insert_query_str.format(full_table_id,", ".join([field.name for field in table_schema]),table_rows)
-        results = query_job_partition_aware(client, job_location, job_id, insert_query_str,
-                                            use_partition_time_filter=False)
+            insert_query_str = insert_query_str.format(full_table_id,", ".join([field.name for field in table_schema]),str(tuple(table_rows))[1:-1])
+
+        results = query_job_partition_aware(client, job_location, job_id, insert_query_str, use_partition_time_filter=False, cluster_fields=clustering_fields)
         return results
     except GoogleAPICallError as api_error:
         logging.error("Error occurred when calling BQ API:\nErrorCode: {}\tErrorMessage: {}\t".format(api_error.code,api_error.message))
@@ -576,7 +603,7 @@ def print_job_details(client, job_location, job_id):
     print("\tType: {}\n\tState: {}\n\tCreated: {}".format(job.job_type, job.state, job.created))
 
 
-def query_job_sample(client, job_location, job_id, query_str, query_params=None, dest_table_id=None,query_priority="interactive"):
+def query_job_sample(client, job_location, job_id, query_str, query_params=None, dest_table_id=None,query_priority="interactive", cluster_fields=None):
     """
     Create and execute a query job
     :param client: BQ Client
@@ -602,7 +629,7 @@ def query_job_sample(client, job_location, job_id, query_str, query_params=None,
         query_parameters=query_params,
         destination=dest_table_id,
         dry_run=False,
-        clustering=None
+        clustering_fiels=cluster_fields
         )
     query_job: QueryJob = client.query(
         location=job_location,
@@ -623,7 +650,7 @@ def query_job_sample(client, job_location, job_id, query_str, query_params=None,
         raise
 
 
-def query_job_partition_aware(client, job_location, job_id, query_str, partition_time_filter:PartitionTimeFilter=None, zone_partition_time_filter:PartitionTimeFilter=None, use_partition_time_filter=False, use_zone_partition_time_filter=False, query_params=[], dest_table_id=None, query_priority="interactive"):
+def query_job_partition_aware(client, job_location, job_id, query_str, partition_time_filter:PartitionTimeFilter=None, zone_partition_time_filter:PartitionTimeFilter=None, use_partition_time_filter=False, use_zone_partition_time_filter=False, query_params=[], dest_table_id=None, query_priority="interactive", cluster_fields=None):
     try:
         query_str_extended = query_str
         if use_partition_time_filter:
@@ -650,7 +677,7 @@ def query_job_partition_aware(client, job_location, job_id, query_str, partition
                     query_str_extended += "\n\tAND TIMESTAMP_ADD(ZONE_PARTITIONTIME, INTERVAL 1 HOUR) BETWEEN CAST('{}' AS TIMESTAMP) AND CAST('{}' AS TIMESTAMP)".format(
                         lower_bound_utc_datetime, upper_bound_utc_datetime)
 
-        results = query_job_sample(client,job_location,job_id,query_str_extended,query_params)
+        results = query_job_sample(client,job_location,job_id,query_str_extended,query_params, cluster_fields=cluster_fields)
         return results
     except Exception as error:
         logging.error("Can not extend query job with time based filter partition")
